@@ -116,3 +116,109 @@ Methods like `createPost`, `follow`, and `tip` **do not fetch sequence numbers**
 **These are not directly submittable.** They exist primarily to easily extract the Soroban `Operation` for batching (e.g., passing to `buildMultiOpTx`) or for server-side queueing where sequence management is handled by a background worker (like `TransactionQueue`).
 
 If you attempt to sign and submit this XDR directly, the network will reject it with a `tx_bad_seq` error.
+
+---
+
+## TipClient
+
+Tipping operations are exposed directly on `LinkoraClient`. The protocol charges a fee in basis points (bps) on every tip, deducted from the tip amount before the remainder reaches the post author.
+
+### Methods
+
+| Method                                                     | Type                  | Description                                                |
+| ---------------------------------------------------------- | --------------------- | ---------------------------------------------------------- |
+| `tip(tipper, postId, token, amount)`                       | Write (throwaway XDR) | Builds a `tip` operation XDR                               |
+| `prepareTipTx(tipper, postId, token, amount, horizonUrl?)` | Write (submittable)   | Fetches real sequence, simulates, returns wallet-ready XDR |
+| `getFeeBps()`                                              | Read                  | Returns the current protocol fee in basis points           |
+| `setFee(feeBps)`                                           | Write (throwaway XDR) | Admin: set the protocol fee (e.g. `150` = 1.5%)            |
+| `getTipCooldownWindow()`                                   | Read                  | Returns the tip cooldown in ledgers                        |
+| `setTipCooldownWindow(cooldownLedgers)`                    | Write (throwaway XDR) | Admin: set the tip cooldown window                         |
+
+> **Note:** The SDK does not expose a `getTipTotals` method — cumulative tip totals per post are maintained by the indexer in the `posts.tip_total` column and returned in feed and search responses. Query them via the indexer's search or feed endpoints.
+
+### Fee split explanation
+
+When a user tips `amount` stroops of `token`:
+
+1. The contract reads the current `feeBps` (settable by admin via `setFee`).
+2. Protocol fee = `floor(amount × feeBps / 10000)`.
+3. The protocol fee is transferred to the `treasury` address.
+4. The remaining `amount − fee` is credited to the post author.
+
+```
+tip amount = 1,000,000 stroops
+feeBps     = 200 (2%)
+fee        = 20,000 stroops → treasury
+payout     = 980,000 stroops → post author
+```
+
+A `feeBps` of `0` means no fee is charged.
+
+### getTipTotals — time-range parameters
+
+Cumulative tip totals are available from the indexer. The `/api/search` endpoint and `/api/feed` responses include a `tip_total` field per post (sum of all tip payouts since the post was indexed).
+
+For time-range breakdowns, query the `tips` table directly or use the indexer search endpoint with the `from` / `to` date parameters:
+
+| Parameter | Type                 | Description                          |
+| --------- | -------------------- | ------------------------------------ |
+| `from`    | ISO 8601 date string | Start of the time window (inclusive) |
+| `to`      | ISO 8601 date string | End of the time window (inclusive)   |
+
+```bash
+# Tips received on a post within a date range
+GET /api/search?q=&from=2024-01-01&to=2024-12-31
+```
+
+### Examples
+
+#### sendTip — throwaway XDR (server-side queue)
+
+```ts
+import { LinkoraClient } from "linkora-sdk";
+
+const client = new LinkoraClient({
+  contractId: "CXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  rpcUrl: "https://soroban-testnet.stellar.org",
+});
+
+// Tip the author of post #42 with 5 XLM (50,000,000 stroops)
+const opXdr = client.tip(
+  "GBFOY...", // tipper
+  42n, // postId
+  "CTOKEN...", // token contract address (e.g. XLM wrapped SEP-41)
+  50_000_000n // amount in stroops
+);
+console.log("Tip Op XDR:", opXdr);
+```
+
+#### prepareTipTx — wallet-ready transaction
+
+```ts
+const txXdr = await client.prepareTipTx(
+  "GBFOY...", // tipper
+  42n, // postId
+  "CTOKEN...", // token contract address
+  50_000_000n // amount in stroops
+);
+// Pass txXdr to Freighter or another Stellar wallet for signing
+```
+
+#### Check current fee and simulate net payout
+
+```ts
+const feeBps = await client.getFeeBps(); // e.g. 200
+const amount = 50_000_000n;
+const fee = (amount * BigInt(feeBps)) / 10_000n;
+const payout = amount - fee;
+console.log(`Fee: ${fee} stroops, Creator receives: ${payout} stroops`);
+```
+
+#### Query tip totals for a post from the indexer
+
+```ts
+const response = await fetch("https://indexer.linkora.example/api/feed?limit=1&viewer=GBFOY...");
+const { posts } = await response.json();
+const post = posts[0];
+console.log(`Post #${post.id} has received ${post.tip_total} stroops in tips`);
+```

@@ -1,48 +1,46 @@
-# Linkora Mini App Developer Guide
+# Mini-App Developer Guide
 
-Mini apps are self-contained web pages that run inside a native Linkora host
-(the mobile app). The host injects a `window.LinkoraSDK` object at load time,
-giving the page access to wallet signing, profile data, and post creation — all
-gated by permissions the user approves on install.
+Build and publish a Linkora mini-app that runs inside the Linkora mobile and web shells, with access to the user's wallet and profile through the Bridge API.
 
 ---
 
-## Table of contents
+## Table of Contents
 
-1. [Quickstart — scaffold in < 5 minutes](#quickstart)
-2. [Manifest schema](#manifest-schema)
-3. [Manifest validation](#manifest-validation)
-4. [Bridge API reference](#bridge-api-reference)
-5. [Canonical example: Tip Jar](#canonical-example-tip-jar)
-6. [Submitting your mini app](#submitting-your-mini-app)
+1. [Quickstart — scaffold in < 5 minutes](#1-quickstart--scaffold-in--5-minutes)
+2. [Manifest schema](#2-manifest-schema)
+3. [Manifest validation](#3-manifest-validation)
+4. [Bridge API reference](#4-bridge-api-reference)
+5. [Canonical example — Tip Jar](#5-canonical-example--tip-jar)
+6. [Submitting your mini-app](#6-submitting-your-mini-app)
 
 ---
 
-## Quickstart
+## 1. Quickstart — scaffold in < 5 minutes
 
-You only need a static HTML file and a manifest. No bundler required.
+You only need a static HTML file and a manifest. No build toolchain is required.
 
-### 1. Create your project directory
+### Step 1 — create a project directory
 
 ```bash
-mkdir my-mini-app && cd my-mini-app
+mkdir my-linkora-app
+cd my-linkora-app
 ```
 
-### 2. Write the manifest
+### Step 2 — create `linkora-manifest.json`
 
 ```json
 {
-  "name": "My Mini App",
+  "name": "My App",
   "version": "1.0.0",
-  "description": "Does something useful.",
+  "description": "A short description (max 200 chars).",
   "entryPoint": "index.html",
-  "permissions": ["wallet.getAddress"]
+  "permissions": ["wallet.read"]
 }
 ```
 
-Save it as `linkora-manifest.json`.
+All fields except `description` and `icon` are required. See [§2 Manifest schema](#2-manifest-schema) for the full field reference.
 
-### 3. Write the HTML entry point
+### Step 3 — create `index.html`
 
 ```html
 <!DOCTYPE html>
@@ -50,319 +48,212 @@ Save it as `linkora-manifest.json`.
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Mini App</title>
+    <title>My App</title>
   </head>
   <body>
     <p id="address">Loading wallet…</p>
 
     <script>
-      // The host injects window.LinkoraSDK when running inside Linkora.
-      // Provide a mock for local development.
-      const SDK = window.LinkoraSDK || {
-        wallet: {
-          getAddress: async () => "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
-        },
-      };
-
-      SDK.wallet.getAddress().then((address) => {
-        document.getElementById("address").textContent = address;
+      // The Bridge is injected by the Linkora shell as window.LinkoraBridge
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "linkora:ready") {
+          LinkoraBridge.wallet.getAddress().then((address) => {
+            document.getElementById("address").textContent = address;
+          });
+        }
       });
     </script>
   </body>
 </html>
 ```
 
-### 4. Test locally
+### Step 4 — validate the manifest locally
 
-Open `index.html` directly in a browser. The dev-fallback mock returns a static
-Stellar address so you can develop without the Linkora app. When the host loads
-your page it replaces `window.LinkoraSDK` with the real bridge.
+```bash
+# From the repo root
+npx ts-node -e "
+  import { validateManifest } from './packages/sdk/src/mini-apps/validateManifest';
+  import manifest from './my-linkora-app/linkora-manifest.json';
+  console.log(validateManifest(manifest));
+"
+```
 
-### 5. Host and register
+Or use the SDK programmatically — see [§3 Manifest validation](#3-manifest-validation).
 
-Deploy your files to any static host (GitHub Pages, Vercel, IPFS, etc.) and
-submit your manifest URL through the Linkora developer portal.
+### Step 5 — test inside the shell
 
-That's it — five steps, no build toolchain required.
+Serve your app on `localhost` and set the entry point to your local URL during development:
+
+```json
+{
+  "entryPoint": "http://localhost:5173/index.html"
+}
+```
+
+Open the Linkora web app (`apps/web`), navigate to Mini Apps → Developer Mode, and paste your manifest or local URL. The shell loads your app in an iframe with the Bridge injected.
 
 ---
 
-## Manifest schema
+## 2. Manifest schema
 
-The schema lives at [`docs/mini-apps/manifest.schema.json`](./manifest.schema.json)
-(JSON Schema draft-07). Every field is described below.
+The manifest is a JSON file named `linkora-manifest.json` at the root of your mini-app. It is validated against the JSON Schema in [`docs/mini-apps/manifest.schema.json`](../mini-apps/manifest.schema.json) and the TypeScript validator in `packages/sdk/src/mini-apps/validateManifest.ts`.
 
-| Field         | Type                     | Required | Description                                                         |
-| ------------- | ------------------------ | -------- | ------------------------------------------------------------------- |
-| `name`        | `string` (1–50 chars)    | ✅       | Display name shown in the app store.                                |
-| `version`     | `string` (semver)        | ✅       | Semantic version, e.g. `"1.2.0"`.                                   |
-| `description` | `string` (max 200 chars) | —        | Short description shown under the app name.                         |
-| `entryPoint`  | `string`                 | ✅       | Relative or absolute URL of the HTML entry point.                   |
-| `icon`        | `string`                 | —        | URL (or data-URI) for the app icon. Recommended size: 256 × 256 px. |
-| `permissions` | `string[]`               | ✅       | Scopes the app needs (see [permissions table](#permissions) below). |
-
-`additionalProperties` is `false` — unknown fields cause validation to fail.
+| Field         | Type       | Required | Constraints            | Description                                   |
+| ------------- | ---------- | -------- | ---------------------- | --------------------------------------------- |
+| `name`        | `string`   | ✅       | 1–50 characters        | Display name shown in the mini-app list       |
+| `version`     | `string`   | ✅       | Semver (`x.y.z`)       | App version                                   |
+| `description` | `string`   | —        | max 200 characters     | Short description shown below the app name    |
+| `entryPoint`  | `string`   | ✅       | max 2048 characters    | Relative path or absolute HTTPS URL to load   |
+| `icon`        | `string`   | —        | max 100 000 characters | HTTPS URL or Base64 data URL for the app icon |
+| `permissions` | `string[]` | ✅       | See below              | Capabilities requested from the user          |
 
 ### Permissions
 
-| Permission     | Description                                                        |
-| -------------- | ------------------------------------------------------------------ |
-| `wallet.read`  | Read-only access to the connected wallet address.                  |
-| `wallet.sign`  | Request that the user sign arbitrary data.                         |
-| `profile.read` | Read the user's public profile (address, username, creator token). |
-| `post.create`  | Open a native confirmation sheet to publish a post.                |
+Only the permissions listed here are granted. Any Bridge call that requires a permission not listed in the manifest is rejected with `PERMISSION_DENIED`.
 
-> **Note:** The bridge also exposes the convenience aliases `wallet.getAddress`
-> and `wallet.signTransaction` used in existing examples. These map
-> internally to `wallet.read` and `wallet.sign` respectively. Prefer the
-> canonical names above in new manifests.
+| Permission     | Grants access to                                    |
+| -------------- | --------------------------------------------------- |
+| `wallet.read`  | Read the connected wallet address                   |
+| `wallet.sign`  | Request transaction signing                         |
+| `profile.read` | Read the current user's profile data                |
+| `post.create`  | Open the post composer pre-filled with your content |
 
-### Example manifest with all fields
+### Validation rules
 
-```json
-{
-  "name": "Tip Jar",
-  "version": "1.0.0",
-  "description": "Tip any Linkora post with XLM using your connected wallet.",
-  "entryPoint": "index.html",
-  "icon": "https://example.com/tip-jar-icon.png",
-  "permissions": ["wallet.read", "wallet.sign"]
-}
-```
+- `additionalProperties` is `false` — unknown fields cause validation failure.
+- `entryPoint` must be a relative path (for submitted apps) or an HTTPS URL. `http://` (non-TLS) URLs are only accepted in Developer Mode.
+- `permissions` must be unique — duplicate values cause validation failure.
 
 ---
 
-## Manifest validation
+## 3. Manifest validation
 
-Validate your manifest against the schema before submitting. The easiest way is
-with [`ajv-cli`](https://github.com/ajv-validator/ajv-cli):
-
-```bash
-npx ajv-cli validate \
-  -s docs/mini-apps/manifest.schema.json \
-  -d path/to/your/linkora-manifest.json
-```
-
-A valid manifest prints `path/to/your/linkora-manifest.json valid`. Any schema
-violation prints a human-readable error with the failing field path.
-
-You can also add validation to CI:
-
-```yaml
-# .github/workflows/ci.yml (excerpt)
-- name: Validate mini-app manifest
-  run: |
-    npx ajv-cli validate \
-      -s docs/mini-apps/manifest.schema.json \
-      -d linkora-manifest.json
-```
-
-### Common validation errors
-
-| Error                                                         | Fix                                            |
-| ------------------------------------------------------------- | ---------------------------------------------- |
-| `"name" must NOT have more than 50 characters`                | Shorten the display name.                      |
-| `"version" must match pattern "^\d+\.\d+\.\d+$"`              | Use semver: `"1.0.0"` not `"v1"`.              |
-| `"permissions[n]" must be equal to one of the allowed values` | Use only the [permitted scopes](#permissions). |
-| `must NOT have additional properties`                         | Remove any fields not in the schema.           |
-
----
-
-## Bridge API reference
-
-When your page loads inside the Linkora host, `window.LinkoraSDK` is injected
-automatically. Always guard with a dev fallback:
-
-```js
-const SDK = window.LinkoraSDK || {/* your mock */};
-```
-
-The bridge has two namespaces: `wallet` and `post`.
-
----
-
-### `SDK.wallet`
-
-#### `wallet.getAddress() → Promise<string>`
-
-Returns the currently connected Stellar address (G-address).
-
-**Requires:** no special permission (address is public).
-
-```js
-const address = await SDK.wallet.getAddress();
-// "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN"
-```
-
----
-
-#### `wallet.signTransaction(xdr: string) → Promise<{ signedXdr: string }>`
-
-Shows the native signing confirmation sheet with a human-readable summary of the
-transaction. Returns the signed XDR on approval.
-
-**Requires:** `wallet.sign` (or legacy alias `wallet.signTransaction`) in
-`permissions`.
-
-**Throws:** `BridgeError` with `code: "UserRejected"` if the user dismisses the
-sheet.
-
-```js
-try {
-  const { signedXdr } = await SDK.wallet.signTransaction(unsignedXdr);
-  // submit signedXdr to Horizon / Soroban RPC
-} catch (err) {
-  if (err.code === "UserRejected") {
-    console.log("User cancelled.");
-  }
-}
-```
-
----
-
-### `SDK.post`
-
-#### `post.create(content: string) → Promise<number | null>`
-
-Opens a native post confirmation sheet pre-filled with `content`. The user can
-edit the text before confirming. On confirmation the post is submitted to the
-contract.
-
-**Requires:** `post.create` in `permissions`.
-
-**Returns:** the new `postId` (integer) on success, or `null` if the user
-cancelled.
-
-```js
-const postId = await SDK.post.create("Just joined Linkora! 🚀");
-if (postId !== null) {
-  console.log("Published as post #" + postId);
-}
-```
-
----
-
-### `SDK.profile`
-
-#### `profile.get() → Promise<Profile>`
-
-Returns the current user's profile object.
-
-**Requires:** `profile.read` in `permissions`.
+The SDK exports `validateManifest` from `packages/sdk/src/mini-apps/validateManifest.ts`. It throws `InvalidManifestError` (from `packages/sdk/src/errors.ts`) when validation fails.
 
 ```ts
-type Profile = {
-  address: string; // Stellar G-address
-  username: string | null; // display handle, e.g. "maya"
-  creatorToken: CreatorToken | string | null;
-};
+import { validateManifest } from "@linkora/sdk/mini-apps/validateManifest";
+
+const raw = await fetch("/linkora-manifest.json").then((r) => r.json());
+
+try {
+  const manifest = validateManifest(raw);
+  console.log("Valid manifest:", manifest.name, manifest.version);
+} catch (err) {
+  // err.message contains the AJV validation error string
+  console.error("Invalid manifest:", err.message);
+}
 ```
 
-```js
-const profile = await SDK.profile.get();
-console.log(profile.username); // "maya"
-```
+The validator enforces the same schema as `docs/mini-apps/manifest.schema.json` but adds two extra runtime checks:
+
+- `entryPoint` length ≤ 2 048 characters.
+- `icon` data URL length ≤ 100 000 characters (to prevent embedding multi-MB images in the manifest).
 
 ---
+
+## 4. Bridge API reference
+
+The Linkora shell injects `window.LinkoraBridge` into every mini-app iframe before dispatching the `linkora:ready` message event. All methods return Promises.
+
+> **Important:** Never call Bridge methods before the `linkora:ready` event fires. The bridge object may not be present on the window until the shell has finished its handshake.
+
+```ts
+window.addEventListener("message", (event) => {
+  if (event.data?.type === "linkora:ready") {
+    // Safe to call Bridge methods here
+  }
+});
+```
+
+### `wallet` namespace
+
+| Method            | Signature                          | Permission    | Description                                                                                                                                       |
+| ----------------- | ---------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getAddress`      | `() => Promise<string>`            | `wallet.read` | Returns the Stellar public key (`G…`) of the connected wallet. Rejects if no wallet is connected.                                                 |
+| `signTransaction` | `(xdr: string) => Promise<string>` | `wallet.sign` | Presents the transaction XDR to the user for approval. Returns the signed XDR on approval, or rejects with `USER_CANCELLED` if the user declines. |
+
+### `profile` namespace
+
+| Method       | Signature                | Permission     | Description                                                            |
+| ------------ | ------------------------ | -------------- | ---------------------------------------------------------------------- |
+| `getProfile` | `() => Promise<Profile>` | `profile.read` | Returns the current user's on-chain profile. See `Profile` type below. |
+
+```ts
+interface Profile {
+  address: string; // Stellar public key
+  handle: string; // e.g. "@alice"
+  displayName: string;
+  bio: string;
+  avatarUrl: string;
+  followerCount: number;
+  followingCount: number;
+}
+```
+
+### `post` namespace
+
+| Method       | Signature                             | Permission    | Description                                                                                                                                           |
+| ------------ | ------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createPost` | `(draft: PostDraft) => Promise<void>` | `post.create` | Opens the Linkora post composer pre-filled with the given draft. The user reviews and submits the post; the mini-app does not submit on their behalf. |
+
+```ts
+interface PostDraft {
+  text?: string; // Pre-filled body text (max 500 characters)
+  mediaUrl?: string; // Optional image or video URL to attach
+  replyToPostId?: number; // Pre-fill as a reply to this post ID
+}
+```
 
 ### Error codes
 
-All bridge errors are instances of `BridgeError`:
+Bridge rejections carry a `code` property:
 
-| `code`                | When thrown                                                  |
-| --------------------- | ------------------------------------------------------------ |
-| `"PermissionDenied"`  | The manifest did not declare the required permission.        |
-| `"UserRejected"`      | The user dismissed a signing or post confirmation sheet.     |
-| `"MethodUnavailable"` | The host has no handler registered for the requested method. |
+| Code                   | Meaning                                                 |
+| ---------------------- | ------------------------------------------------------- |
+| `PERMISSION_DENIED`    | The manifest does not declare the required permission   |
+| `USER_CANCELLED`       | The user dismissed the signing dialog or composer       |
+| `WALLET_NOT_CONNECTED` | No wallet is connected in the parent shell              |
+| `INVALID_XDR`          | The XDR passed to `signTransaction` could not be parsed |
+| `BRIDGE_NOT_READY`     | A Bridge method was called before `linkora:ready` fired |
 
-```js
-try {
-  await SDK.wallet.signTransaction(xdr);
-} catch (err) {
-  switch (err.code) {
-    case "UserRejected":
-      // user tapped Cancel — this is normal, no need to alert
-      break;
-    case "PermissionDenied":
-      console.error("Add wallet.sign to your manifest permissions.");
-      break;
-    default:
-      console.error("Bridge error:", err.message);
+```ts
+LinkoraBridge.wallet.signTransaction(xdr).catch((err) => {
+  if (err.code === "USER_CANCELLED") {
+    console.log("User declined the transaction");
   }
-}
+});
 ```
 
 ---
 
-## Canonical example: Tip Jar
+## 5. Canonical example — Tip Jar
 
-The Tip Jar lives at [`examples/mini-apps/tip-jar/`](../../examples/mini-apps/tip-jar/).
-It is the reference implementation and demonstrates every concept in this guide.
+The reference implementation lives at [`examples/mini-apps/tip-jar/`](../../examples/mini-apps/tip-jar/).
 
-```
-examples/mini-apps/tip-jar/
-├── index.html             ← single-file app, no build step
-└── linkora-manifest.json  ← manifest with wallet permissions
-```
+| File                                                                              | Purpose                                                                       |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| [`index.html`](../../examples/mini-apps/tip-jar/index.html)                       | Single-file UI: wallet connect row, post-ID input, amount presets, tip button |
+| [`linkora-manifest.json`](../../examples/mini-apps/tip-jar/linkora-manifest.json) | Declares `wallet.getAddress` and `wallet.signTransaction` permissions         |
 
-### What it shows
+The Tip Jar demonstrates:
 
-- **Dev fallback mock** — `window.LinkoraSDK` is read with an `||` fallback, so
-  `index.html` works in any browser without the Linkora host.
-- **Wallet connection display** — calls `SDK.wallet.getAddress()` on init and
-  shows a connected/disconnected indicator.
-- **Transaction signing flow** — builds a transaction XDR, calls
-  `SDK.wallet.signTransaction`, handles `UserRejected`, and shows status
-  feedback at each stage (building → waiting for signature → submitting).
-- **Input validation** — guards against empty post IDs and non-positive amounts
-  before touching the bridge.
+- Waiting for `linkora:ready` before using the Bridge.
+- Calling `wallet.getAddress()` to populate the connected-address display.
+- Building a Soroban `tip_post` transaction XDR client-side and passing it to `wallet.signTransaction()`.
+- Handling `USER_CANCELLED` and network errors gracefully with status messages.
 
-### Run it locally
-
-```bash
-# No install needed — just open the file
-open examples/mini-apps/tip-jar/index.html
-# or: python3 -m http.server 8080
-```
-
-### Tip Jar manifest
-
-```json
-{
-  "name": "Tip Jar",
-  "version": "1.0.0",
-  "description": "Tip any Linkora post with XLM using your connected wallet.",
-  "entryPoint": "index.html",
-  "icon": "...",
-  "permissions": ["wallet.getAddress", "wallet.signTransaction"]
-}
-```
-
-> The `wallet.getAddress` and `wallet.signTransaction` aliases used here are
-> supported for backwards compatibility. New apps should prefer `wallet.read`
-> and `wallet.sign`.
+Read through `examples/mini-apps/tip-jar/index.html` before building your own app — it covers every Bridge interaction pattern in under 400 lines of vanilla HTML and JavaScript.
 
 ---
 
-## Submitting your mini app
+## 6. Submitting your mini-app
 
-1. Host your files on a publicly reachable URL.
-2. Validate the manifest (see [Manifest validation](#manifest-validation)).
-3. Open a pull request adding your app entry to
-   `apps/mobile/mini-apps/store.ts` following the existing shape:
+1. **Validate** your manifest with `validateManifest` (see [§3](#3-manifest-validation)).
+2. **Host** your app at a stable HTTPS URL (or bundle it as a single self-contained HTML file).
+3. **Open a pull request** to this repository that adds your app under `examples/mini-apps/<your-app-name>/`, including:
+   - `linkora-manifest.json`
+   - `index.html` (or a pointer to your hosted URL in the manifest's `entryPoint`)
+   - A brief `README.md` describing what the app does
+4. The Linkora team reviews permissions, UX, and code quality before merging.
 
-   ```ts
-   {
-     id: "my-mini-app",
-     name: "My Mini App",
-     description: "Does something useful.",
-     icon: "https://example.com/icon.png",
-     entry: "https://example.com/my-mini-app/index.html",
-     permissions: ["wallet.read"],
-   }
-   ```
-
-4. Link to your hosted `linkora-manifest.json` in the PR description.
-
-The bridge API reference is also published separately in
-[`BRIDGE_API.md`](./BRIDGE_API.md).
+For questions, join the [Telegram community](https://t.me/+13csp8G4ccRhY2Zk) or open a GitHub Discussion.
